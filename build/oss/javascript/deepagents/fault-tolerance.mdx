@@ -1,0 +1,99 @@
+---
+title: Fault tolerance
+description: Make your deep agent resilient with rate limiting, retries, fallbacks, and error handling
+---
+
+Fault tolerance middleware keeps your deep agent running when things go wrong. Not all errors should be handled the same way: transient failures (network timeouts, rate limits) should be retried automatically, errors the LLM can recover from (bad tool output, parsing failures) should be fed back to the model, and errors that need human input should pause the agent. For the full breakdown with code examples, see [Handle errors appropriately](/oss/javascript/langgraph/thinking-in-langgraph#handle-errors-appropriately).
+
+## Rate limiting
+
+Rate limiting here refers to capping the agent's own LLM and tool usage within a run, not API gateway rate limiting for incoming requests.
+
+Without limits, a confused agent can burn through your LLM API budget in minutes by looping on the same tool call or making hundreds of model calls. Set caps on both model calls and tool executions per run:
+
+
+
+```typescript
+import { createAgent, modelCallLimitMiddleware, toolCallLimitMiddleware } from "langchain";
+
+const agent = createAgent({
+  model: "google_genai:gemini-3.5-flash",
+  middleware: [
+    modelCallLimitMiddleware({ runLimit: 50 }),
+    toolCallLimitMiddleware({ runLimit: 200 }),
+  ],
+});
+```
+
+
+Use `run_limit` to cap calls within a single invocation (resets each turn). Use `thread_limit` to cap calls across an entire conversation (requires a checkpointer). See [ModelCallLimitMiddleware](https://reference.langchain.com/javascript/langchain/index/modelCallLimitMiddleware) and [ToolCallLimitMiddleware](https://reference.langchain.com/javascript/langchain/index/toolCallLimitMiddleware) for the full configuration.
+
+## Retries
+
+Transient failures (network timeouts, rate limits) should be retried automatically. Model calls and tool calls each have their own retry middleware with exponential backoff:
+
+
+
+```typescript
+import {
+  createAgent,
+  modelRetryMiddleware,
+  toolRetryMiddleware,
+} from "langchain";
+
+const agent = createAgent({
+  model: "google_genai:gemini-3.5-flash",
+  middleware: [
+    // Retry model calls on rate limits, timeouts, and 5xx errors
+    modelRetryMiddleware({ maxRetries: 3, backoffFactor: 2.0, initialDelayMs: 1000 }),
+    // Retry specific tools that hit external APIs (not all tools)
+    toolRetryMiddleware({
+      maxRetries: 2,
+      tools: ["search", "fetch_url"],
+      retryOn: [TimeoutError, TypeError],
+    }),
+  ],
+});
+```
+
+
+Scope [ToolRetryMiddleware](https://reference.langchain.com/javascript/langchain/index/toolRetryMiddleware) to specific tools rather than retrying everything. A filesystem `read_file` that fails will not benefit from a retry, but a web search that times out probably will. See [ModelRetryMiddleware](https://reference.langchain.com/javascript/langchain/index/modelRetryMiddleware) for the full configuration.
+
+## Fallbacks
+
+If your primary model provider goes down entirely, the fallback middleware switches to an alternative model:
+
+
+
+```typescript
+import {
+  createAgent,
+  modelFallbackMiddleware,
+} from "langchain";
+
+const agent = createAgent({
+  model: "google_genai:gemini-3.5-flash",
+  middleware: [
+    // If the primary model is fully down, fall back to an alternative
+    modelFallbackMiddleware("gpt-5.5"),
+  ],
+});
+```
+
+
+See [ModelFallbackMiddleware](https://reference.langchain.com/javascript/langchain/index/modelFallbackMiddleware) for the full configuration.
+
+## Error handling
+
+When a tool raises an exception during execution, the agent run halts by default. Use @[ToolErrorMiddleware] to catch specific exceptions and convert them into error ToolMessages that the model can see and recover from, instead of crashing the run.
+
+---
+
+<div className="source-links">
+<Callout icon="terminal-2">
+    [Connect these docs](/use-these-docs) to Claude, VSCode, and more via MCP for real-time answers.
+</Callout>
+<Callout icon="edit">
+    [Edit this page on GitHub](https://github.com/langchain-ai/docs/edit/main/src/oss/deepagents/fault-tolerance.mdx) or [file an issue](https://github.com/langchain-ai/docs/issues/new/choose).
+</Callout>
+</div>
